@@ -1,6 +1,7 @@
 # Mount Google Drive
 from google.colab import drive
 drive.mount('/content/drive')
+
 base_path = "/content/drive/MyDrive/thesis-dataset/"
 
 # Import libraries
@@ -8,148 +9,112 @@ import pandas as pd
 import numpy as np
 
 # -----------------------------
-# Step 1: Load datasets
+# Common Cleaning Functions
 # -----------------------------
-netflow = pd.read_csv(base_path + "NF-BoT-IoT-v3.csv", low_memory=False, nrows=500000)
-beath = pd.read_csv(base_path + "labelled_2021may-ip-10-100-1-105-dns.csv", low_memory=False)
-cic = pd.read_csv(base_path + "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv", low_memory=False)
 
-# -----------------------------
-# Step 2: Clean column names
-# -----------------------------
 def clean_columns(df):
     df.columns = df.columns.str.strip().str.lower()
     return df
 
-netflow = clean_columns(netflow)
-beath = clean_columns(beath)
-cic = clean_columns(cic)
-
-# -----------------------------
-# Step 3: Define column mapping
-# -----------------------------
-column_mapping = {
-    'netflow': {
-        'ipv4_src_addr': 'source ip',
-        'ipv4_dst_addr': 'destination ip',
-        'l4_src_port': 'source port',
-        'l4_dst_port': 'destination port',
-        'flow_start_milliseconds': 'timestamp',
-        'flow_duration_milliseconds': 'flow duration',
-        'label': 'label'
-    },
-    'beath': {
-        'sourceip': 'source ip',
-        'destinationip': 'destination ip',
-        'label': 'label'
-        # add more mappings if needed
-    },
-    'cic': {
-        'destination port': 'destination port',
-        'flow duration': 'flow duration',
-        'total fwd packets': 'total fwd packets',
-        'total backward packets': 'total backward packets',
-        'total length of fwd packets': 'total length of fwd packets',
-        'total length of bwd packets': 'total length of bwd packets',
-        'flow packets/s': 'flow packets/s',
-        'flow bytes/s': 'flow bytes/s',
-        'syn flag count': 'syn flag count',
-        'ack flag count': 'ack flag count',
-        'fin flag count': 'fin flag count',
-        'rst flag count': 'rst flag count',
-        'average packet size': 'average packet size',
-        'min packet length': 'min packet length',
-        'max packet length': 'max packet length',
-        'packet length std': 'packet length std',
-        'label': 'label'
-    }
-}
-
-# -----------------------------
-# Step 4: Rename columns
-# -----------------------------
-netflow.rename(columns=column_mapping['netflow'], inplace=True)
-beath.rename(columns=column_mapping['beath'], inplace=True)
-cic.rename(columns=column_mapping['cic'], inplace=True)
-
-# -----------------------------
-# Step 5: Select common features
-# -----------------------------
-common_features = [
-    "source ip",
-    "destination ip",
-    "source port",
-    "destination port",
-    "protocol",
-    "flow duration",
-    "total fwd packets",
-    "total backward packets",
-    "total length of fwd packets",
-    "total length of bwd packets",
-    "flow packets/s",
-    "flow bytes/s",
-    "syn flag count",
-    "ack flag count",
-    "fin flag count",
-    "rst flag count",
-    "average packet size",
-    "min packet length",
-    "max packet length",
-    "packet length std",
-    "label"
-]
-
-def select_common(df, features):
-    available = [col for col in features if col in df.columns]
-    return df[available]
-
-netflow_clean = select_common(netflow, common_features)
-beath_clean = select_common(beath, common_features)
-cic_clean = select_common(cic, common_features)
-
-# -----------------------------
-# Step 6: Find truly common columns
-# -----------------------------
-common_cols = list(
-    set(netflow_clean.columns) &
-    set(beath_clean.columns) &
-    set(cic_clean.columns)
-)
-print("Final Common Columns:", common_cols)
-
-# Keep only truly common columns
-netflow_clean = netflow_clean[common_cols]
-beath_clean = beath_clean[common_cols]
-cic_clean = cic_clean[common_cols]
-
-# -----------------------------
-# Step 7: Clean data (remove NaN/inf)
-# -----------------------------
-def clean_data(df):
+def basic_clean(df):
+    # Replace inf with NaN
     df = df.replace([np.inf, -np.inf], np.nan)
+    
+    # Drop columns with too many missing values (more than 50%)
+    threshold = int(0.5 * len(df))
+    df = df.dropna(axis=1, thresh=threshold)
+    
+    # Fill remaining NaN with 0
     df = df.fillna(0)
+    
     return df
 
-netflow_clean = clean_data(netflow_clean)
-beath_clean = clean_data(beath_clean)
-cic_clean = clean_data(cic_clean)
+def clean_label(df):
+    if 'label' in df.columns:
+        df['label'] = df['label'].astype(str).str.strip().str.lower()
+    return df
+
+
+# =============================
+# 🔵 NETFLOW v3 CLEANING
+# =============================
+print("\nCleaning NetFlow dataset...")
+
+netflow = pd.read_csv(base_path + "NF-BoT-IoT-v3.csv", low_memory=False, nrows=500000)
+
+netflow = clean_columns(netflow)
+
+# Rename important columns
+netflow.rename(columns={
+    'ipv4_src_addr': 'source_ip',
+    'ipv4_dst_addr': 'destination_ip',
+    'l4_src_port': 'source_port',
+    'l4_dst_port': 'destination_port',
+    'flow_duration_milliseconds': 'flow_duration'
+}, inplace=True)
+
+netflow = basic_clean(netflow)
+netflow = clean_label(netflow)
+
+print("NetFlow Shape:", netflow.shape)
+print(netflow.head())
+
+netflow.to_csv(base_path + "netflow_clean.csv", index=False)
+
+
+# =============================
+# 🟢 BEATH DATASET CLEANING
+# =============================
+print("\nCleaning BeATh dataset...")
+
+beath = pd.read_csv(base_path + "labelled_2021may-ip-10-100-1-105-dns.csv", low_memory=False)
+
+beath = clean_columns(beath)
+
+# Rename columns
+beath.rename(columns={
+    'sourceip': 'source_ip',
+    'destinationip': 'destination_ip'
+}, inplace=True)
+
+beath = basic_clean(beath)
+beath = clean_label(beath)
+
+print("BeATh Shape:", beath.shape)
+print(beath.head())
+
+beath.to_csv(base_path + "beath_clean.csv", index=False)
+
+
+# =============================
+# 🔴 CICIDS2017 CLEANING
+# =============================
+print("\nCleaning CICIDS2017 dataset...")
+
+cic = pd.read_csv(base_path + "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv", low_memory=False)
+
+cic = clean_columns(cic)
+
+# Fix weird spaces in CIC column names
+cic.columns = cic.columns.str.replace(" ", "_")
+
+# Rename important columns
+cic.rename(columns={
+    'flow_duration': 'flow_duration',
+    'total_fwd_packets': 'total_fwd_packets',
+    'total_backward_packets': 'total_backward_packets'
+}, inplace=True)
+
+cic = basic_clean(cic)
+cic = clean_label(cic)
+
+print("CIC Shape:", cic.shape)
+print(cic.head())
+
+cic.to_csv(base_path + "cic_clean.csv", index=False)
+
 
 # -----------------------------
-# Step 8: Check shapes and columns
+# DONE
 # -----------------------------
-print("NetFlow Shape:", netflow_clean.shape)
-print("BeATh Shape:", beath_clean.shape)
-print("CIC Shape:", cic_clean.shape)
-
-print("NetFlow Columns:", netflow_clean.columns.tolist())
-print("BeATh Columns:", beath_clean.columns.tolist())
-print("CIC Columns:", cic_clean.columns.tolist())
-
-# -----------------------------
-# Step 9: Save cleaned datasets
-# -----------------------------
-netflow_clean.to_csv(base_path + "netflow_clean1.csv", index=False)
-beath_clean.to_csv(base_path + "beath_clean1.csv", index=False)
-cic_clean.to_csv(base_path + "cic_clean1.csv", index=False)
-
-print("Cleaned files saved to Google Drive successfully ✅")
+print("\n✅ All datasets cleaned and saved separately!")
