@@ -1,0 +1,152 @@
+# =========================
+# 1. MOUNT DRIVE + IMPORTS
+# =========================
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense
+
+from xgboost import XGBClassifier
+
+
+# =========================
+# 2. LOAD DATA
+# =========================
+base_path = "/content/drive/MyDrive/thesis-dataset/"
+df = pd.read_csv(base_path + "netflow_clean.csv")
+
+print("Shape:", df.shape)
+print(df['label'].value_counts())
+
+
+# =========================
+# 3. PREPROCESSING
+# =========================
+X = df.drop('label', axis=1)
+y = df['label']
+
+# keep numeric only
+X = X.select_dtypes(include=[np.number])
+
+# scale features
+scaler = MinMaxScaler()
+X_scaled = scaler.fit_transform(X)
+
+
+# =========================
+# 4. AUTOENCODER MODEL
+# =========================
+input_dim = X_scaled.shape[1]
+
+input_layer = Input(shape=(input_dim,))
+
+# Encoder
+encoded = Dense(64, activation='relu')(input_layer)
+encoded = Dense(32, activation='relu')(encoded)
+bottleneck = Dense(16, activation='relu')(encoded)
+
+# Decoder
+decoded = Dense(32, activation='relu')(bottleneck)
+decoded = Dense(64, activation='relu')(decoded)
+output_layer = Dense(input_dim, activation='sigmoid')(decoded)
+
+autoencoder = Model(inputs=input_layer, outputs=output_layer)
+
+autoencoder.compile(optimizer='adam', loss='mse')
+
+autoencoder.summary()
+
+
+# =========================
+# 5. TRAIN AUTOENCODER
+# =========================
+# train ONLY normal data (1 = normal in your dataset)
+X_train_ae = X_scaled[y == 1]
+
+history = autoencoder.fit(
+    X_train_ae, X_train_ae,
+    epochs=20,
+    batch_size=128,
+    validation_split=0.1,
+    shuffle=True
+)
+
+
+# =========================
+# 6. RECONSTRUCTION ERROR
+# =========================
+X_pred = autoencoder.predict(X_scaled)
+
+mse = np.mean(np.power(X_scaled - X_pred, 2), axis=1)
+
+
+# =========================
+# 7. ROC-BASED THRESHOLD
+# =========================
+from sklearn.metrics import roc_curve
+
+y_true_ae = (y == 0).astype(int)  # 1 = attack
+
+fpr, tpr, thresholds = roc_curve(y_true_ae, mse)
+best_threshold = thresholds[np.argmax(tpr - fpr)]
+
+print("Best Threshold:", best_threshold)
+
+y_pred_ae = (mse > best_threshold).astype(int)
+
+
+# =========================
+# 8. ENCODER (FEATURE EXTRACTION)
+# =========================
+encoder = Model(inputs=autoencoder.input,
+                outputs=bottleneck)
+
+X_latent = encoder.predict(X_scaled)
+
+print("Latent shape:", X_latent.shape)
+
+
+# =========================
+# 9. XGBOOST TRAINING
+# =========================
+X_train, X_test, y_train, y_test = train_test_split(
+    X_latent, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+xgb = XGBClassifier(
+    n_estimators=200,
+    max_depth=6,
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    eval_metric='logloss'
+)
+
+xgb.fit(X_train, y_train)
+
+
+# =========================
+# 10. FINAL PREDICTION
+# =========================
+y_pred = xgb.predict(X_test)
+
+
+# =========================
+# 11. EVALUATION
+# =========================
+print("\nCONFUSION MATRIX:")
+print(confusion_matrix(y_test, y_pred))
+
+print("\nCLASSIFICATION REPORT:")
+print(classification_report(y_test, y_pred))
