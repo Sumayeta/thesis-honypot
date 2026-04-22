@@ -1,0 +1,131 @@
+# =========================
+# 1. LOAD + IMPORT
+# =========================
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense
+
+from xgboost import XGBClassifier
+
+
+# =========================
+# 2. LOAD DATA
+# =========================
+base_path = "/content/drive/MyDrive/thesis-dataset/"
+df = pd.read_csv(base_path + "cic_clean.csv")
+
+print("Shape:", df.shape)
+print(df['label'].value_counts())
+
+
+# =========================
+# 3. PREPROCESS
+# =========================
+X = df.drop('label', axis=1)
+y = df['label'].astype(str).str.strip().str.lower()
+
+X = X.select_dtypes(include=[np.number])
+
+# =========================
+# 4. TRAIN-TEST SPLIT FIRST
+# =========================
+X_train_raw, X_test_raw, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+
+# =========================
+# 5. SCALE (FIT ONLY ON TRAIN)
+# =========================
+scaler = MinMaxScaler()
+
+X_train_scaled = scaler.fit_transform(X_train_raw)
+X_test_scaled = scaler.transform(X_test_raw)
+
+
+# =========================
+# 6. AUTOENCODER
+# =========================
+input_dim = X_train_scaled.shape[1]
+
+input_layer = Input(shape=(input_dim,))
+encoded = Dense(64, activation='relu')(input_layer)
+encoded = Dense(32, activation='relu')(encoded)
+bottleneck = Dense(16, activation='relu')(encoded)
+
+decoded = Dense(32, activation='relu')(bottleneck)
+decoded = Dense(64, activation='relu')(decoded)
+output_layer = Dense(input_dim, activation='sigmoid')(decoded)
+
+autoencoder = Model(inputs=input_layer, outputs=output_layer)
+autoencoder.compile(optimizer='adam', loss='mse')
+
+
+# =========================
+# 7. TRAIN AE (ONLY BENIGN)
+# =========================
+X_train_ae = X_train_scaled[y_train == 'benign']
+
+print("AE Train Shape:", X_train_ae.shape)
+
+autoencoder.fit(
+    X_train_ae, X_train_ae,
+    epochs=20,
+    batch_size=128,
+    validation_split=0.1,
+    shuffle=True
+)
+
+
+# =========================
+# 8. LATENT FEATURES
+# =========================
+encoder = Model(inputs=autoencoder.input, outputs=bottleneck)
+
+X_train_latent = encoder.predict(X_train_scaled)
+X_test_latent = encoder.predict(X_test_scaled)
+
+
+# =========================
+# 9. XGBOOST
+# =========================
+y_train_bin = (y_train != 'benign').astype(int)
+y_test_bin = (y_test != 'benign').astype(int)
+
+xgb = XGBClassifier(
+    n_estimators=200,
+    max_depth=6,
+    learning_rate=0.1,
+    eval_metric='logloss'
+)
+
+xgb.fit(X_train_latent, y_train_bin)
+
+
+# =========================
+# 10. PREDICTION
+# =========================
+pred_cic = xgb.predict(X_test_latent)
+from sklearn.metrics import roc_auc_score
+
+print("ROC-AUC:", roc_auc_score(y_test_bin, pred_cic))
+
+# =========================
+# 11. EVALUATION
+# =========================
+print("\nCONFUSION MATRIX:")
+print(confusion_matrix(y_test_bin, pred_cic))
+
+print("\nCLASSIFICATION REPORT:")
+print(classification_report(y_test_bin, pred_cic))
