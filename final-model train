@@ -1,0 +1,169 @@
+from google.colab import drive
+drive.mount('/content/drive')
+
+import pandas as pd
+import numpy as np
+
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense
+
+from xgboost import XGBClassifier
+
+base_path = "/content/drive/MyDrive/thesis-dataset/"
+
+# =====================
+# LOAD DATA
+# =====================
+cic = pd.read_csv(base_path + "cic_clean.csv")
+netflow = pd.read_csv(base_path + "netflow_clean.csv")
+beath = pd.read_csv(base_path + "beath_clean.csv")
+
+print("CIC:", cic.shape)
+print("NetFlow:", netflow.shape)
+print("BeATh:", beath.shape)
+
+
+# =====================
+# PREPROCESS FUNCTION (FIXED)
+# =====================
+def preprocess(df, dataset_name="generic"):
+    df = df.copy()
+
+    # -------- LABEL HANDLING --------
+    if dataset_name == "beath":
+        # BeATh: evil = 1, sus = 0
+        if 'evil' in df.columns:
+            y = df['evil']
+        elif 'sus' in df.columns:
+            y = df['sus']
+        else:
+            raise ValueError("BeATh: No 'evil' or 'sus' column found!")
+
+    else:
+        if 'label' not in df.columns:
+            raise ValueError(f"{dataset_name}: No label column found!")
+        y = df['label']
+
+    # normalize labels if string
+    if y.dtype == 'object':
+        y = y.astype(str).str.strip().str.lower()
+
+    # -------- FEATURES --------
+    X = df.drop(columns=[col for col in ['label','evil','sus'] if col in df.columns])
+    X = X.select_dtypes(include=[np.number])
+
+    scaler = MinMaxScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    return X_scaled, y, scaler
+
+
+# =====================
+# APPLY PREPROCESS
+# =====================
+X_cic, y_cic, scaler_cic = preprocess(cic, "cic")
+X_netflow, y_netflow, scaler_netflow = preprocess(netflow, "netflow")
+X_beath, y_beath, scaler_beath = preprocess(beath, "beath")
+
+
+# =====================
+# AUTOENCODER MODEL
+# =====================
+def build_autoencoder(input_dim):
+    inp = Input(shape=(input_dim,))
+
+    x = Dense(64, activation='relu')(inp)
+    x = Dense(32, activation='relu')(x)
+    bottleneck = Dense(16, activation='relu')(x)
+
+    x = Dense(32, activation='relu')(bottleneck)
+    x = Dense(64, activation='relu')(x)
+    out = Dense(input_dim, activation='sigmoid')(x)
+
+    autoencoder = Model(inp, out)
+    encoder = Model(inp, bottleneck)
+
+    autoencoder.compile(optimizer='adam', loss='mse')
+
+    return autoencoder, encoder
+
+
+# =====================
+# CIC TRAIN
+# =====================
+ae_cic, enc_cic = build_autoencoder(X_cic.shape[1])
+
+X_cic_train = X_cic[(y_cic == 'benign') | (y_cic == 0) | (y_cic == 1)]
+
+ae_cic.fit(
+    X_cic_train, X_cic_train,
+    epochs=10,
+    batch_size=128,
+    validation_split=0.1,
+    shuffle=True
+)
+
+X_cic_latent = enc_cic.predict(X_cic)
+
+
+# =====================
+# BEATH TRAIN (FIXED)
+# =====================
+ae_beath, enc_beath = build_autoencoder(X_beath.shape[1])
+
+# normal = sus (0), attack = evil (1)
+X_beath_train = X_beath[y_beath == 0]
+
+ae_beath.fit(
+    X_beath_train, X_beath_train,
+    epochs=10,
+    batch_size=32,
+    validation_split=0.1,
+    shuffle=True
+)
+
+X_beath_latent = enc_beath.predict(X_beath)
+
+
+# =====================
+# LABEL BINARY FIX
+# =====================
+y_cic_bin = (y_cic != 'benign').astype(int) if y_cic.dtype == 'object' else y_cic
+y_netflow_bin = y_netflow
+y_beath_bin = y_beath.astype(int) if y_beath.dtype != 'object' else (y_beath != 'sus').astype(int)
+
+
+# =====================
+# XGBOOST (CIC MODEL)
+# =====================
+X_train, X_test, y_train, y_test = train_test_split(
+    X_cic_latent, y_cic_bin,
+    test_size=0.2,
+    stratify=y_cic_bin,
+    random_state=42
+)
+
+xgb = XGBClassifier(
+    n_estimators=200,
+    max_depth=6,
+    learning_rate=0.1,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    eval_metric='logloss'
+)
+
+xgb.fit(X_train, y_train)
+
+
+# =====================
+# TEST ON BEATH (IMPORTANT PART)
+# =====================
+beath_pred = xgb.predict(X_beath_latent)
+
+print("\nBEATH RESULT:")
+print(confusion_matrix(y_beath_bin, beath_pred))
+print(classification_report(y_beath_bin, beath_pred))
